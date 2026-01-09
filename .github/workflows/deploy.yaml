@@ -72,7 +72,7 @@ jobs:
       - name: Deploy with Docker Compose
         working-directory: .container
         env:
-          GITHUB_REPOSITORY: ${{ github.repository }}
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
         run: |
           # Stop existing containers
           docker compose down || true

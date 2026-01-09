@@ -1,6 +1,6 @@
 services:
   sirambro-app:
-    image: ghcr.io/${GITHUB_REPOSITORY:-sirambro}:latest
+    image: ghcr.io/${IMAGE_NAME:-atan0707/sirambro}:latest
     container_name: sirambro-app
     restart: unless-stopped
     ports:
