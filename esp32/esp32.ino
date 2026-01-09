@@ -2,13 +2,22 @@
 #include <Wire.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
+#include <WiFi.h>
+#include <PubSubClient.h>
+
+const char* ssid = "UBA_2.4G";
+const char* password = "izhanhebat123";
+
+const char* mqtt_server = "192.168.1.23";
+
+WiFiClient espClient;
+PubSubClient client(espClient);
 
 int pump1 = 27;
 int pump2 = 21;
 
 int _moisture,sensor_analog;
 const int sensor_pin = 32;  /* Soil moisture sensor O/P pin */
-
 
 // define OLED
 #define SDA_PIN 19
@@ -42,10 +51,99 @@ long duration;
 float distanceCm;
 float distanceInch;
 
+// Pump control state
+bool pumpActive = false;
+unsigned long pumpStartTime = 0;
+const unsigned long PUMP_DURATION = 3000; // 3 seconds
+
+void callback(char* topic, byte* message, unsigned int length) {
+  String msg;
+  for (int i = 0; i < length; i++) {
+    msg += (char)message[i];
+  }
+
+  Serial.println("MQTT Message received: " + msg);
+
+  // Handle pump control
+  if (String(topic) == "sirambro/pump/control") {
+    if (msg == "ON" && !pumpActive) {
+      Serial.println("🚿 Pump activated for 3 seconds!");
+      digitalWrite(pump1, HIGH);
+      digitalWrite(pump2, HIGH);
+      pumpActive = true;
+      pumpStartTime = millis();
+      client.publish("sirambro/pump/status", "ON");
+    }
+  }
+}
+
+void checkPumpTimeout() {
+  if (pumpActive && (millis() - pumpStartTime >= PUMP_DURATION)) {
+    digitalWrite(pump1, LOW);
+    digitalWrite(pump2, LOW);
+    pumpActive = false;
+    Serial.println("🚿 Pump deactivated");
+    client.publish("sirambro/pump/status", "OFF");
+  }
+}
+
+void connectWiFi() {
+  Serial.println();
+  Serial.println("Connecting to WiFi...");
+  WiFi.begin(ssid, password);
+
+  int retryCount = 0;
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+    retryCount++;
+
+    if (retryCount >= 20) { // ~10 seconds timeout
+      Serial.println("\n⚠️ WiFi connection failed. Retrying...");
+      WiFi.disconnect();
+      delay(2000);
+      WiFi.begin(ssid, password);
+      retryCount = 0;
+    }
+  }
+
+  Serial.println("\n✅ WiFi Connected!");
+  Serial.print("IP Address: ");
+  Serial.println(WiFi.localIP());
+}
+
+void reconnectMQTT() {
+  while (!client.connected()) {
+    Serial.println("Connecting to MQTT...");
+    if (client.connect("ESP32Client")) {
+      Serial.println("✅ MQTT Connected!");
+      client.subscribe("sirambro/pump/control");
+    } else {
+      Serial.print("❌ MQTT Failed, rc=");
+      Serial.print(client.state());
+      Serial.println(" — retrying in 2 seconds...");
+      delay(2000);
+    }
+  }
+}
+
+void publishSensorData() {
+  // Create JSON string with sensor data
+  String json = "{";
+  json += "\"moisture\":" + String(_moisture) + ",";
+  json += "\"distance\":" + String(distanceCm, 1) + ",";
+  json += "\"batteryVoltage\":" + String(batteryVoltage, 2) + ",";
+  json += "\"batteryPercent\":" + String(batteryPercent) + ",";
+  json += "\"pumpActive\":" + String(pumpActive ? "true" : "false");
+  json += "}";
+  
+  client.publish("sirambro/sensors", json.c_str());
+  Serial.println("📡 Published: " + json);
+}
+
 void setup() {
   // put your setup code here, to run once:
   Serial.begin(115200); // Starts the serial communication
-
   // Ultrasonic sensor
   pinMode(trigPin, OUTPUT); // Sets the trigPin as an Output
   pinMode(echoPin, INPUT); // Sets the echoPin as an Input
@@ -69,6 +167,11 @@ void setup() {
   // Voltage sensor
   analogReadResolution(12);
   analogSetPinAttenuation(ANALOG_IN_PIN, ADC_11db);
+
+  connectWiFi();
+
+  client.setServer(mqtt_server, 1883);
+  client.setCallback(callback);
 }
 
 float readBatteryVoltage() {
@@ -104,18 +207,11 @@ int batteryPercentage(float voltage) {
 }
 
 void loop() {
-  // put your main code here, to run repeatedly:
-  /**
-  This is the code for pump
+  if (!client.connected()) reconnectMQTT();
+  client.loop();
   
-  digitalWrite(pump1, HIGH);
-  digitalWrite(pump2, HIGH);
-  delay(3000);
-
-  digitalWrite(pump1, LOW);
-  digitalWrite(pump2, LOW);
-  delay(3000);
-  */
+  // Check if pump needs to be turned off
+  checkPumpTimeout();
 
   /**
   This is the code for ultrasonic sensor
@@ -184,7 +280,19 @@ void loop() {
     display.print(distanceCm, 1);
     display.println(" cm");
     
+    // Display MQTT connection status
+    display.println();
+    display.print("MQTT: ");
+    if (client.connected()) {
+      display.println("Connected");
+    } else {
+      display.println("Disconnected");
+    }
+    
     display.display();
+    
+    // Publish sensor data to MQTT
+    publishSensorData();
     
     delay(1000);
 }
